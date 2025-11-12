@@ -68,5 +68,7 @@ Le projet sera évalué sur :
 
 ---
 
-## ⚙️ Equipe de projet
-### Mathieu BONHEUR / Evan GABOURY / Mohammed
+## ⚙️ Versions complètes
+- `versions/mastermind_base.c` : Jeu de base en un seul fichier
+- `versions/mastermind_advanced.c` : Jeu avancé en un seul fichier
+
