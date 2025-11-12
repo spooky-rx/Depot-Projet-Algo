@@ -6,7 +6,3 @@
 - Feedback:
   - ● Noir: bonne couleur, bien placée.
   - ○ Blanc: bonne couleur, mal placée.
-
-## Compilation
-```bash
-make
