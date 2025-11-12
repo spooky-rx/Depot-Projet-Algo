@@ -68,7 +68,5 @@ Le projet sera évalué sur :
 
 ---
 
-## ⚙️ Compilation et exécution
-### Compilation
-```bash
-make
+## ⚙️ Equipe de projet
+### Mathieu BONHEUR / Evan GABOURY / Mohammed
