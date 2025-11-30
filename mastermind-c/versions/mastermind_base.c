@@ -13,11 +13,6 @@
  * - Sans répétition (ex: RGBY ou R G B Y)
  * - Insensible aux espaces, insensible à la casse (r == R)
  *
- * Compilation:
- *   gcc -Wall -Wextra -O2 mastermind.c -o mastermind
- *
- * Exécution:
- *   ./mastermind
  */
 
 #include <stdio.h>
