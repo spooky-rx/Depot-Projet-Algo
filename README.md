@@ -1,13 +1,13 @@
-# 🎮 Mastermind (Jeu de base) en C
+#  Mastermind (Jeu de base) en C
 
-## 📌 Objectif du projet
+##  Objectif du projet
 Développer une version console du jeu **Mastermind** en langage C, en respectant les règles classiques du jeu et les contraintes de programmation (modularité, validation des entrées, feedback clair, documentation).
 
 Ce projet est réalisé en groupe et doit être organisé en plusieurs fichiers (`.c` et `.h`) pour favoriser la lisibilité et la collaboration.
 
 ---
 
-## 🧩 Règles du jeu
+##  Règles du jeu
 - Le **code secret** est composé de **4 couleurs distinctes** choisies parmi :
   - `R` = Rouge  
   - `G` = Vert  
@@ -17,14 +17,14 @@ Ce projet est réalisé en groupe et doit être organisé en plusieurs fichiers 
   - `P` = Violet  
 - Le joueur dispose de **10 tentatives maximum** pour deviner le code.
 - À chaque tentative, le programme fournit un **feedback** :
-  - ⚫ **Noir (●)** : bonne couleur, bien placée.  
-  - ⚪ **Blanc (○)** : bonne couleur, mais mal placée.  
+  -  **Noir (●)** : bonne couleur, bien placée.  
+  -  **Blanc (○)** : bonne couleur, mais mal placée.  
 - Le joueur gagne s’il trouve le code avant la fin des tentatives.  
 - Sinon, le code secret est révélé à la fin.
 
 ---
 
-## 🛠️ Fonctionnalités attendues
+##  Fonctionnalités attendues
 1. **Entrée utilisateur**  
    - Saisie d’une proposition de 4 lettres (ex: `RGBY` ou `R G B Y`).  
    - Insensible à la casse (`r == R`).  
@@ -56,7 +56,7 @@ Ce projet est réalisé en groupe et doit être organisé en plusieurs fichiers 
 
 ---
 
-## 📊 Évaluation
+##  Évaluation
 Le projet sera évalué sur :
 - Respect des règles du jeu et du cahier des charges.  
 - Modularité et lisibilité du code.  
@@ -68,7 +68,7 @@ Le projet sera évalué sur :
 
 ---
 
-## ⚙️ Versions complètes
+##  Versions complètes
 - `versions/mastermind_base.c` : Jeu de base en un seul fichier
 - `versions/mastermind_advanced.c` : Jeu avancé en un seul fichier
 
