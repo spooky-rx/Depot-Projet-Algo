@@ -74,19 +74,25 @@ Le projet sera évalué sur :
 
 
 
-```md
 ```mermaid
 flowchart LR
+    %% Côté gauche du V : Conception
+    A([Spécifications<br/>README.md]) --> B([Conception fonctionnelle<br/>game.h<br/>feedback.h])
+    B --> C([Conception technique<br/>parse.h<br/>utils.h<br/>colors.h])
 
-  subgraph Conception
-    A[Spécifications<br/>README.md] --> B[Conception fonctionnelle<br/>game.h<br/>feedback.h]
-    B --> C[Conception technique<br/>parse.h<br/>utils.h<br/>colors.h]
-  end
+    %% Pointe du V : Codage
+    C --> D([Codage<br/>src/*.c])
 
-  C --> D[Codage<br/>src/*.c]
+    %% Côté droit du V : Tests
+    D --> E([Tests unitaires<br/>versions/*.c])
+    E --> F([Tests d'intégration<br/>Exécution du jeu])
+    F --> G([Validation finale])
 
-  subgraph Tests
-    D --> E[Tests unitaires<br/>versions/*.c]
-    E --> F[Tests d'intégration]
-    F --> G[Validation finale]
-  end
+    %% Mise en forme globale du V
+    style A fill:#e8f0fe,stroke:#3b6ad9,stroke-width:1px
+    style B fill:#e8f0fe,stroke:#3b6ad9,stroke-width:1px
+    style C fill:#e8f0fe,stroke:#3b6ad9,stroke-width:1px
+    style D fill:#fff4cc,stroke:#d1a100,stroke-width:1px
+    style E fill:#d4f8e8,stroke:#19a974,stroke-width:1px
+    style F fill:#d4f8e8,stroke:#19a974,stroke-width:1px
+    style G fill:#d4f8e8,stroke:#19a974,stroke-width:1px
