@@ -74,13 +74,19 @@ Le projet sera évalué sur :
 
 
 
+```md
 ```mermaid
-flowchart TD
+flowchart LR
 
-  A[Spécifications<br/>README.md] --> B[Conception fonctionnelle<br/>game.h<br/>feedback.h]
-  B --> C[Conception technique<br/>parse.h<br/>utils.h<br/>colors.h]
+  subgraph Conception
+    A[Spécifications<br/>README.md] --> B[Conception fonctionnelle<br/>game.h<br/>feedback.h]
+    B --> C[Conception technique<br/>parse.h<br/>utils.h<br/>colors.h]
+  end
+
   C --> D[Codage<br/>src/*.c]
 
-  D --> E[Tests unitaires<br/>versions/*.c]
-  E --> F[Tests d'intégration<br/>Exécution du jeu]
-  F --> G[Validation finale]
+  subgraph Tests
+    D --> E[Tests unitaires<br/>versions/*.c]
+    E --> F[Tests d'intégration]
+    F --> G[Validation finale]
+  end
