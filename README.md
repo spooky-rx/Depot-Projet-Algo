@@ -72,3 +72,15 @@ Le projet sera évalué sur :
 - `versions/mastermind_base.c` : Jeu de base en un seul fichier
 - `versions/mastermind_advanced.c` : Jeu avancé en un seul fichier
 
+
+
+```mermaid
+flowchart TD
+
+  A[Spécifications<br/>README.md] --> B[Conception fonctionnelle<br/>game.h<br/>feedback.h]
+  B --> C[Conception technique<br/>parse.h<br/>utils.h<br/>colors.h]
+  C --> D[Codage<br/>src/*.c]
+
+  D --> E[Tests unitaires<br/>versions/*.c]
+  E --> F[Tests d'intégration<br/>Exécution du jeu]
+  F --> G[Validation finale]
