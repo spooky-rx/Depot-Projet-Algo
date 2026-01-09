@@ -1,3 +1,13 @@
+/*
+  Mastermind console — monolithique, compilable en une fois (C11)
+  - Garde les mêmes “grosses” fonctions et l’IA minimax
+  - Ajoute les fonctions manquantes: generate_secret_ai, print_rules, resume_game
+  - Corrige l’UX (menu + prompts)
+  - Corrige la logique save/quit (commande dans la saisie du guess)
+  - Durcit load_game (bornes / validations pour éviter l’out-of-bounds)
+  - Stocke guesses/secret avec '\0' (CODE_LEN+1) pour pouvoir les afficher en %s sans danger
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,19 +15,15 @@
 #include <time.h>
 #include <stdbool.h>
 
-/* Prototypes nécessaires pour éviter les implicit declaration */
-void generate_secret_ai(char secret[CODE_LEN], int color_count, bool allow_repetition);
-void print_rules(void);
-void resume_game(Stats *st);
-
 /* Paramètres “globaux” du jeu */
 #define CODE_LEN 4
 #define MAX_COLORS 6
 #define MIN_COLORS 3
 #define MAX_TRIES_MIN 5
 #define MAX_TRIES_MAX 30
+#define MAX_HISTORY 64
 
-/* La palette: on joue avec des lettres (R,G,B,...) + des noms pour l’affichage */
+/* Palette */
 static const char GLOBAL_COLOR_SET[MAX_COLORS]   = { 'R','G','B','Y','O','P' };
 static const char *GLOBAL_COLOR_NAMES[MAX_COLORS]= { "Rouge","Vert","Bleu","Jaune","Orange","Violet" };
 
@@ -25,39 +31,43 @@ static const char *GLOBAL_COLOR_NAMES[MAX_COLORS]= { "Rouge","Vert","Bleu","Jaun
    Structures de données
    ------------------------- */
 
-/* Configuration d’une partie (ce que tu règles dans “Configurer”) */
 typedef struct {
-    int color_count;       // combien de couleurs on autorise (3..6)
-    int max_tries;         // nb max de tentatives (5..30)
-    bool allow_repetition; // si on autorise les doublons dans le code et les guesses
-    bool timed_mode;       // mode chrono strict (si tu dépasses → tentative “perdue”)
-    int time_per_try_sec;  // limite de temps par tentative si timed_mode
+    int color_count;       // 3..6
+    int max_tries;         // 5..30
+    bool allow_repetition; // doublons autorisés
+    bool timed_mode;       // chrono strict
+    int time_per_try_sec;  // limite par tentative si timed_mode
 } GameConfig;
 
-/* État complet d’une partie (utile pour jouer + sauvegarder/reprendre) */
 typedef struct {
-    char guesses[64][CODE_LEN]; // historique des propositions (64 c’est large)
-    int blacks[64];             // pions noirs par tentative
-    int whites[64];             // pions blancs par tentative
-    int tries;                  // combien de tentatives déjà faites
-    char secret[CODE_LEN];      // le code secret en mémoire
-    GameConfig cfg;             // la config qui a servi à lancer la partie
-    bool in_progress;           // pratique pour savoir si save “valide”
+    char guesses[MAX_HISTORY][CODE_LEN + 1]; // +1 pour '\0'
+    int blacks[MAX_HISTORY];
+    int whites[MAX_HISTORY];
+    int tries;
+    char secret[CODE_LEN + 1]; // +1 pour '\0'
+    GameConfig cfg;
+    bool in_progress;
 } GameState;
 
-/* Stats cumulées et sauvegardées dans stats.txt */
 typedef struct {
     unsigned long games_played;
     unsigned long games_won;
-    unsigned long total_tries;  // pour faire une moyenne
-    double total_time;          // pour faire une moyenne
+    unsigned long total_tries;
+    double total_time;
 } Stats;
+
+/* -------------------------
+   Prototypes
+   ------------------------- */
+
+void generate_secret_ai(char secret[CODE_LEN + 1], int color_count, bool allow_repetition);
+void print_rules(void);
+void resume_game(Stats *st);
 
 /* -------------------------
    Presets / configuration
    ------------------------- */
 
-/* Valeurs “normales” si l’utilisateur ne touche à rien */
 static void set_default_config(GameConfig *cfg) {
     cfg->color_count = 6;
     cfg->max_tries = 10;
@@ -66,7 +76,6 @@ static void set_default_config(GameConfig *cfg) {
     cfg->time_per_try_sec = 0;
 }
 
-/* Presets: juste des configs prêtes à l’emploi */
 static void set_preset_easy(GameConfig *cfg) {
     cfg->color_count = 3;
     cfg->max_tries = 20;
@@ -97,26 +106,48 @@ static void set_preset_expert(GameConfig *cfg) {
 }
 
 /* -------------------------
-   Entrées utilisateur / parsing
+   Entrées utilisateur
    ------------------------- */
 
-/* read_line: lecture propre d’une ligne (évite scanf qui est chiant avec les espaces/newlines) */
 static bool read_line(char *buffer, size_t buflen) {
+    if (!buffer || buflen == 0) return false;
     if (fgets(buffer, (int)buflen, stdin) == NULL) return false;
     size_t n = strlen(buffer);
     if (n > 0 && buffer[n-1] == '\n') buffer[n-1] = '\0';
     return true;
 }
 
-/* Vérifie si une lettre fait partie de la palette autorisée (selon color_count) */
+static void trim_spaces(char *s) {
+    if (!s) return;
+    // trim left
+    size_t i = 0;
+    while (s[i] && isspace((unsigned char)s[i])) i++;
+    if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
+    // trim right
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n-1])) {
+        s[n-1] = '\0';
+        n--;
+    }
+}
+
+static bool equals_ignore_case(const char *a, const char *b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++; b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 static bool is_valid_color_char(char c, int color_count) {
     c = (char)toupper((unsigned char)c);
-    for (int i = 0; i < color_count; i++)
+    for (int i = 0; i < color_count; i++) {
         if (GLOBAL_COLOR_SET[i] == c) return true;
+    }
     return false;
 }
 
-/* Petit helper: détecte les doublons (utile quand repetition = OFF) */
 static bool has_no_repetition(const char code[], int len) {
     for (int i = 0; i < len; i++)
         for (int j = i+1; j < len; j++)
@@ -126,33 +157,32 @@ static bool has_no_repetition(const char code[], int len) {
 
 /*
   parse_guess:
-  - lit une ligne libre (l’utilisateur peut taper "R G B Y" ou "RGBY" etc.)
   - garde uniquement les lettres
-  - vérifie que c’est bien 4 lettres valides
-  - applique la règle répétition ON/OFF
+  - vérifie 4 lettres valides
+  - applique répétition ON/OFF
 */
-static bool parse_guess(const char *line, char out_code[CODE_LEN],
+static bool parse_guess(const char *line, char out_code[CODE_LEN + 1],
                         int color_count, bool allow_repetition) {
     int count = 0;
+    out_code[0] = '\0';
 
-    for (const char *p = line; *p; ++p) {
+    for (const char *p = line; p && *p; ++p) {
         char c = *p;
-
-        if (isalpha((unsigned char)c)) {                 // on ignore tout sauf les lettres
+        if (isalpha((unsigned char)c)) {
             c = (char)toupper((unsigned char)c);
-
-            if (!is_valid_color_char(c, color_count))    // lettre inconnue → direct non
+            if (!is_valid_color_char(c, color_count))
                 return false;
 
-            if (count < CODE_LEN)                        // on remplit le code lettre par lettre
+            if (count < CODE_LEN) {
                 out_code[count++] = c;
-            else                                         // trop de lettres → non (ex: "RGBYOO")
-                return false;
+            } else {
+                return false; // trop de lettres
+            }
         }
     }
 
-    if (count != CODE_LEN)                               // pas assez de lettres → non
-        return false;
+    if (count != CODE_LEN) return false;
+    out_code[CODE_LEN] = '\0';
 
     if (!allow_repetition && !has_no_repetition(out_code, CODE_LEN))
         return false;
@@ -161,15 +191,13 @@ static bool parse_guess(const char *line, char out_code[CODE_LEN],
 }
 
 /* -------------------------
-   Génération du secret + feedback (le cœur du Mastermind)
+   Génération du secret + feedback
    ------------------------- */
 
-/*
-  generate_secret:
-  - si répétitions ON: simple rand()%color_count pour chaque position
-  - si répétitions OFF: on mélange un “pool” de couleurs (shuffle) et on prend les 4 premières
-*/
-static void generate_secret(char secret[CODE_LEN], int color_count, bool allow_repetition) {
+static void generate_secret(char secret[CODE_LEN + 1], int color_count, bool allow_repetition) {
+    if (color_count < MIN_COLORS) color_count = MIN_COLORS;
+    if (color_count > MAX_COLORS) color_count = MAX_COLORS;
+
     if (allow_repetition) {
         for (int i = 0; i < CODE_LEN; i++)
             secret[i] = GLOBAL_COLOR_SET[rand() % color_count];
@@ -177,7 +205,6 @@ static void generate_secret(char secret[CODE_LEN], int color_count, bool allow_r
         char pool[MAX_COLORS];
         for (int i = 0; i < color_count; i++) pool[i] = GLOBAL_COLOR_SET[i];
 
-        // shuffle Fisher-Yates (classique, efficace)
         for (int i = color_count - 1; i > 0; i--) {
             int j = rand() % (i + 1);
             char t = pool[i]; pool[i] = pool[j]; pool[j] = t;
@@ -186,20 +213,11 @@ static void generate_secret(char secret[CODE_LEN], int color_count, bool allow_r
         for (int k = 0; k < CODE_LEN; k++)
             secret[k] = pool[k];
     }
+
+    secret[CODE_LEN] = '\0';
 }
 
-/*
-  compute_feedback:
-  But: calculer (black, white)
-  - black = bonnes couleurs à la bonne position
-  - white = bonnes couleurs mais mauvaise position (sans double-compter)
-
-  Méthode:
-  1) on marque les positions exactes (black) et on “retire” ces cases
-  2) on compte les occurrences restantes de chaque couleur dans secret et guess
-  3) pour chaque couleur, white += min(count_secret, count_guess)
-*/
-static void compute_feedback(const char secret[CODE_LEN], const char guess[CODE_LEN],
+static void compute_feedback(const char secret[CODE_LEN + 1], const char guess[CODE_LEN + 1],
                              int *black, int *white) {
     *black = 0;
     *white = 0;
@@ -207,16 +225,14 @@ static void compute_feedback(const char secret[CODE_LEN], const char guess[CODE_
     bool s_used[CODE_LEN] = {0};
     bool g_used[CODE_LEN] = {0};
 
-    // 1) blacks = match exact position
     for (int i = 0; i < CODE_LEN; i++) {
         if (secret[i] == guess[i]) {
             (*black)++;
-            s_used[i] = 1;
-            g_used[i] = 1;
+            s_used[i] = true;
+            g_used[i] = true;
         }
     }
 
-    // 2) compter les couleurs restantes
     int sc[256] = {0};
     int gc[256] = {0};
 
@@ -225,7 +241,6 @@ static void compute_feedback(const char secret[CODE_LEN], const char guess[CODE_
         if (!g_used[i]) gc[(unsigned char)guess[i]]++;
     }
 
-    // 3) whites = somme des min(sc[c], gc[c])
     int matches = 0;
     for (int c = 0; c < 256; c++) {
         if (sc[c] > 0 && gc[c] > 0)
@@ -239,27 +254,28 @@ static void compute_feedback(const char secret[CODE_LEN], const char guess[CODE_
    Mode chrono strict
    ------------------------- */
 
-/*
-  timed_get_guess:
-  idée “simple” : on mesure le temps entre avant/après read_line
-  Limite: en console, si l’utilisateur dépasse, on ne peut pas “interrompre” fgets.
-  Donc ça ne bloque pas l’utilisateur… ça annule juste la tentative après coup.
-*/
-static bool timed_get_guess(char out_code[CODE_LEN], int color_count, bool allow_repetition,
+static bool timed_get_guess(char out_code[CODE_LEN + 1], int color_count, bool allow_repetition,
                             int time_limit_sec) {
     time_t start = time(NULL);
 
     char line[256];
+    printf("Proposition (ex: RGBY) ou commande (save/quit): ");
+    fflush(stdout);
+
     if (!read_line(line, sizeof(line))) return false;
 
     time_t end = time(NULL);
     double elapsed = difftime(end, start);
 
     if (elapsed > (double)time_limit_sec) {
-        printf("Temps depasse (%.0fs > %ds). Tentative annulee.\n", elapsed, time_limit_sec);
+        printf("Temps depasse (%.0fs > %ds). Entree ignoree.\n", elapsed, time_limit_sec);
         return false;
     }
 
+    trim_spaces(line);
+
+    // Ici on laisse la détection de commandes au niveau appelant si besoin,
+    // donc on ne traite que la proposition.
     return parse_guess(line, out_code, color_count, allow_repetition);
 }
 
@@ -267,12 +283,8 @@ static bool timed_get_guess(char out_code[CODE_LEN], int color_count, bool allow
    Sauvegarde / chargement
    ------------------------- */
 
-/*
-  save_game:
-  écrit la config + le secret + l’historique dans un fichier texte.
-  C’est pas un format binaire: pratique à déboguer à la main.
-*/
 static bool save_game(const GameState *gs, const char *path) {
+    if (!gs || !path) return false;
     FILE *f = fopen(path, "w");
     if (!f) return false;
 
@@ -283,11 +295,9 @@ static bool save_game(const GameState *gs, const char *path) {
     fprintf(f, "time_per_try_sec=%d\n", gs->cfg.time_per_try_sec);
     fprintf(f, "tries=%d\n", gs->tries);
 
-    // On sauve même le secret: indispensable pour reprendre exactement la partie
     fprintf(f, "secret=%c%c%c%c\n", gs->secret[0], gs->secret[1], gs->secret[2], gs->secret[3]);
 
-    // Historique des tentatives avec leur feedback
-    for (int i = 0; i < gs->tries; i++) {
+    for (int i = 0; i < gs->tries && i < MAX_HISTORY; i++) {
         fprintf(f, "guess%d=%c%c%c%c black=%d white=%d\n",
                 i+1,
                 gs->guesses[i][0], gs->guesses[i][1], gs->guesses[i][2], gs->guesses[i][3],
@@ -298,12 +308,22 @@ static bool save_game(const GameState *gs, const char *path) {
     return true;
 }
 
-/*
-  load_game:
-  relit save.txt ligne par ligne et reconstruit GameState
-  Note: c’est tolérant: si les lignes sont dans un ordre différent, ça marche quand même (grâce aux sscanf).
-*/
+static bool sanitize_loaded_config(GameConfig *cfg) {
+    if (!cfg) return false;
+
+    if (cfg->color_count < MIN_COLORS || cfg->color_count > MAX_COLORS) return false;
+    if (cfg->max_tries < MAX_TRIES_MIN || cfg->max_tries > MAX_TRIES_MAX) return false;
+    if (cfg->timed_mode) {
+        if (cfg->time_per_try_sec < 1 || cfg->time_per_try_sec > 3600) return false;
+    } else {
+        cfg->time_per_try_sec = 0;
+    }
+    return true;
+}
+
 static bool load_game(GameState *gs, const char *path) {
+    if (!gs || !path) return false;
+
     FILE *f = fopen(path, "r");
     if (!f) return false;
 
@@ -311,35 +331,68 @@ static bool load_game(GameState *gs, const char *path) {
     gs->in_progress = true;
 
     char line[256];
+    bool got_cfg_color = false, got_cfg_tries = false, got_secret = false, got_tries = false;
 
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "color_count=%d", &gs->cfg.color_count) == 1) continue;
-        if (sscanf(line, "max_tries=%d", &gs->cfg.max_tries) == 1) continue;
+        // config
+        if (sscanf(line, "color_count=%d", &gs->cfg.color_count) == 1) { got_cfg_color = true; continue; }
+        if (sscanf(line, "max_tries=%d", &gs->cfg.max_tries) == 1) { got_cfg_tries = true; continue; }
 
         int b;
         if (sscanf(line, "allow_repetition=%d", &b) == 1) { gs->cfg.allow_repetition = (b != 0); continue; }
         if (sscanf(line, "timed_mode=%d", &b) == 1) { gs->cfg.timed_mode = (b != 0); continue; }
 
         if (sscanf(line, "time_per_try_sec=%d", &gs->cfg.time_per_try_sec) == 1) continue;
-        if (sscanf(line, "tries=%d", &gs->tries) == 1) continue;
+
+        if (sscanf(line, "tries=%d", &gs->tries) == 1) {
+            got_tries = true;
+            continue;
+        }
 
         if (sscanf(line, "secret=%c%c%c%c",
-                   &gs->secret[0], &gs->secret[1], &gs->secret[2], &gs->secret[3]) == 4) continue;
+                   &gs->secret[0], &gs->secret[1], &gs->secret[2], &gs->secret[3]) == 4) {
+            gs->secret[CODE_LEN] = '\0';
+            got_secret = true;
+            continue;
+        }
 
-        // Partie “historique”
+        // historique
         int idx, black, white;
         char g0,g1,g2,g3;
 
         if (sscanf(line, "guess%d=%c%c%c%c black=%d white=%d",
                    &idx, &g0, &g1, &g2, &g3, &black, &white) == 7) {
+            if (idx < 1 || idx > MAX_HISTORY) continue;
             int i = idx - 1;
-            gs->guesses[i][0] = g0; gs->guesses[i][1] = g1; gs->guesses[i][2] = g2; gs->guesses[i][3] = g3;
+
+            // sécurité: bornes black/white
+            if (black < 0 || black > CODE_LEN) continue;
+            if (white < 0 || white > CODE_LEN) continue;
+
+            gs->guesses[i][0] = (char)toupper((unsigned char)g0);
+            gs->guesses[i][1] = (char)toupper((unsigned char)g1);
+            gs->guesses[i][2] = (char)toupper((unsigned char)g2);
+            gs->guesses[i][3] = (char)toupper((unsigned char)g3);
+            gs->guesses[i][CODE_LEN] = '\0';
+
             gs->blacks[i] = black;
             gs->whites[i] = white;
         }
     }
 
     fclose(f);
+
+    // validations minimales
+    if (!(got_cfg_color && got_cfg_tries && got_secret && got_tries)) return false;
+    if (!sanitize_loaded_config(&gs->cfg)) return false;
+    if (gs->tries < 0) return false;
+    if (gs->tries > MAX_HISTORY) gs->tries = MAX_HISTORY; // on tronque proprement
+    // secret doit être composé de lettres valides selon config
+    for (int i = 0; i < CODE_LEN; i++) {
+        if (!is_valid_color_char(gs->secret[i], gs->cfg.color_count)) return false;
+    }
+    if (!gs->cfg.allow_repetition && !has_no_repetition(gs->secret, CODE_LEN)) return false;
+
     return true;
 }
 
@@ -347,12 +400,9 @@ static bool load_game(GameState *gs, const char *path) {
    Stats (persistantes)
    ------------------------- */
 
-/*
-  load_stats:
-  si stats.txt n’existe pas → on démarre à zéro (normal).
-  sinon on lit 4 valeurs: played, won, total_tries, total_time
-*/
 static bool load_stats(Stats *st, const char *path) {
+    if (!st || !path) return false;
+
     FILE *f = fopen(path, "r");
     if (!f) {
         st->games_played = 0;
@@ -364,7 +414,6 @@ static bool load_stats(Stats *st, const char *path) {
 
     if (fscanf(f, "%lu %lu %lu %lf",
                &st->games_played, &st->games_won, &st->total_tries, &st->total_time) != 4) {
-        // fichier corrompu ou format inattendu → reset “safe”
         st->games_played = 0;
         st->games_won = 0;
         st->total_tries = 0;
@@ -375,8 +424,9 @@ static bool load_stats(Stats *st, const char *path) {
     return true;
 }
 
-/* Sauvegarde simple des stats (une ligne) */
 static bool save_stats(const Stats *st, const char *path) {
+    if (!st || !path) return false;
+
     FILE *f = fopen(path, "w");
     if (!f) return false;
 
@@ -387,7 +437,6 @@ static bool save_stats(const Stats *st, const char *path) {
     return true;
 }
 
-/* Affichage des stats avec calculs de moyennes */
 static void print_stats(const Stats *st) {
     printf("\n=== Statistiques ===\n");
     printf("- Parties jouees: %lu\n", st->games_played);
@@ -410,28 +459,16 @@ static void print_stats(const Stats *st) {
 }
 
 /* -------------------------
-   IA (heuristique type Knuth “light”)
+   IA (heuristique minimax “light”)
    ------------------------- */
 
-/*
-  feedback_between:
-  juste un alias “lisible” autour de compute_feedback.
-  L’IA compare un code candidat avec un guess et regarde le feedback.
-*/
-static void feedback_between(const char secret[CODE_LEN],
-                             const char guess[CODE_LEN],
+static void feedback_between(const char secret[CODE_LEN + 1],
+                             const char guess[CODE_LEN + 1],
                              int *black, int *white) {
     compute_feedback(secret, guess, black, white);
 }
 
-/*
-  generate_all_codes:
-  génère toutes les combinaisons possibles selon la config.
-  - si répétitions ON : color_count^4 possibilités
-  - sinon : permutations sans répétition
-  Attention: tu stockes dans codes[][4], donc faut que le tableau soit assez grand.
-*/
-static int generate_all_codes(char codes[][CODE_LEN], const GameConfig *cfg) {
+static int generate_all_codes(char codes[][CODE_LEN + 1], const GameConfig *cfg) {
     int count = 0;
 
     if (cfg->allow_repetition) {
@@ -443,10 +480,10 @@ static int generate_all_codes(char codes[][CODE_LEN], const GameConfig *cfg) {
             codes[count][1] = GLOBAL_COLOR_SET[i1];
             codes[count][2] = GLOBAL_COLOR_SET[i2];
             codes[count][3] = GLOBAL_COLOR_SET[i3];
+            codes[count][CODE_LEN] = '\0';
             count++;
         }
     } else {
-        // Version “sans répétition”: on impose i1!=i0, i2!=i0,i1, etc.
         for (int i0 = 0; i0 < cfg->color_count; i0++)
         for (int i1 = 0; i1 < cfg->color_count; i1++) if (i1 != i0)
         for (int i2 = 0; i2 < cfg->color_count; i2++) if (i2 != i0 && i2 != i1)
@@ -455,6 +492,7 @@ static int generate_all_codes(char codes[][CODE_LEN], const GameConfig *cfg) {
             codes[count][1] = GLOBAL_COLOR_SET[i1];
             codes[count][2] = GLOBAL_COLOR_SET[i2];
             codes[count][3] = GLOBAL_COLOR_SET[i3];
+            codes[count][CODE_LEN] = '\0';
             count++;
         }
     }
@@ -462,22 +500,12 @@ static int generate_all_codes(char codes[][CODE_LEN], const GameConfig *cfg) {
     return count;
 }
 
-/*
-  evaluate_guess:
-  idée: pour un guess donné, on regarde la “pire” taille de partition possible.
-  - On simule le feedback (b,w) pour chaque secret possible restant.
-  - On compte combien tombent dans chaque case (b,w).
-  - Le score = max(partition) (pire cas).
-  L’IA veut minimiser ce pire cas.
-*/
-static int evaluate_guess(const char guess[CODE_LEN],
-                          char possibles[][CODE_LEN],
+static int evaluate_guess(const char guess[CODE_LEN + 1],
+                          char possibles[][CODE_LEN + 1],
                           const bool actif[],
                           int nb_possibles) {
     int worst_partition = 0;
-    int counts[25]; // 5 blacks possibles (0..4) * 5 whites possibles (0..4) => 25 cases
-
-    for (int k = 0; k < 25; k++) counts[k] = 0;
+    int counts[25] = {0}; // 0..4 blacks, 0..4 whites
 
     for (int i = 0; i < nb_possibles; i++) {
         if (!actif[i]) continue;
@@ -485,8 +513,8 @@ static int evaluate_guess(const char guess[CODE_LEN],
         int b, w;
         feedback_between(possibles[i], guess, &b, &w);
 
-        int idx = b * 5 + w; // mapping (b,w) -> index (simple et rapide)
-        counts[idx]++;
+        int idx = b * 5 + w;
+        if (idx >= 0 && idx < 25) counts[idx]++;
     }
 
     for (int k = 0; k < 25; k++)
@@ -496,14 +524,8 @@ static int evaluate_guess(const char guess[CODE_LEN],
     return worst_partition;
 }
 
-/*
-  choose_next_guess:
-  brute force: teste tous les codes encore “actifs” comme prochain guess.
-  prend celui qui minimise evaluate_guess (donc minimax).
-  C’est coûteux, mais vu les tailles (max ~1296 avec répétitions et 6 couleurs) ça reste jouable.
-*/
-static void choose_next_guess(char guess_out[CODE_LEN],
-                              char possibles[][CODE_LEN],
+static void choose_next_guess(char guess_out[CODE_LEN + 1],
+                              char possibles[][CODE_LEN + 1],
                               bool actif[],
                               int nb_possibles) {
     int best_score = 999999;
@@ -519,29 +541,24 @@ static void choose_next_guess(char guess_out[CODE_LEN],
         }
     }
 
-    // fallback au cas où (normalement best_index devrait exister)
     if (best_index == -1) {
         for (int i = 0; i < nb_possibles; i++) {
             if (actif[i]) { best_index = i; break; }
         }
     }
 
-    if (best_index != -1) memcpy(guess_out, possibles[best_index], CODE_LEN);
-    else {
-        // plan Z: met tout à la première couleur (ça évite de laisser guess_out non initialisé)
+    if (best_index != -1) {
+        memcpy(guess_out, possibles[best_index], CODE_LEN + 1);
+    } else {
         for (int i = 0; i < CODE_LEN; i++) guess_out[i] = GLOBAL_COLOR_SET[0];
+        guess_out[CODE_LEN] = '\0';
     }
 }
 
-/*
-  filter_possibilities:
-  après un guess + feedback (noirs_attendus, blancs_attendus),
-  on élimine tous les codes qui ne donneraient pas le même feedback.
-*/
-static int filter_possibilities(char possibles[][CODE_LEN],
+static int filter_possibilities(char possibles[][CODE_LEN + 1],
                                 bool actif[],
                                 int nb_possibles,
-                                const char guess[CODE_LEN],
+                                const char guess[CODE_LEN + 1],
                                 int noirs_attendus,
                                 int blancs_attendus) {
     int count = 0;
@@ -563,99 +580,162 @@ static int filter_possibilities(char possibles[][CODE_LEN],
 }
 
 /* -------------------------
+   Affichage aide / état
+   ------------------------- */
+
+static void print_palette(int color_count) {
+    printf("Palette (%d couleurs): ", color_count);
+    for (int i = 0; i < color_count; i++) {
+        printf("%c=%s", GLOBAL_COLOR_SET[i], GLOBAL_COLOR_NAMES[i]);
+        if (i + 1 < color_count) printf(", ");
+    }
+    printf("\n");
+}
+
+static void print_history(const GameState *gs) {
+    printf("\n--- Historique ---\n");
+    if (!gs || gs->tries <= 0) {
+        printf("(aucune tentative)\n");
+        return;
+    }
+    for (int i = 0; i < gs->tries && i < MAX_HISTORY; i++) {
+        if (gs->guesses[i][0] == '\0') continue;
+        printf("%2d) %s  -> noirs=%d blancs=%d\n", i+1, gs->guesses[i], gs->blacks[i], gs->whites[i]);
+    }
+}
+
+/* -------------------------
    Boucles de jeu (Humain / IA)
    ------------------------- */
 
-/*
-  play_human:
-  - génère un secret
-  - boucle jusqu’à trouver ou dépasser max_tries
-  - à chaque tentative: parse + feedback + stockage historique
-  - si victoire/défaite: maj stats + save_stats
-  Bonus: l’utilisateur peut taper "save" pendant la partie pour sauvegarder.
-*/
+static bool get_guess_or_command(GameState *gs, char out_guess[CODE_LEN + 1], bool *want_quit) {
+    *want_quit = false;
+
+    char line[256];
+    printf("Proposition (ex: RGBY) ou commande (save/quit/help): ");
+    fflush(stdout);
+
+    if (!read_line(line, sizeof(line))) return false;
+    trim_spaces(line);
+
+    if (line[0] == '\0') return false;
+
+    if (equals_ignore_case(line, "help")) {
+        print_rules();
+        return false;
+    }
+
+    if (equals_ignore_case(line, "save")) {
+        if (gs && gs->in_progress) {
+            if (save_game(gs, "save.txt")) printf("Sauvegarde OK (save.txt)\n");
+            else printf("Echec sauvegarde.\n");
+        } else {
+            printf("Aucune partie en cours a sauvegarder.\n");
+        }
+        return false;
+    }
+
+    if (equals_ignore_case(line, "quit")) {
+        *want_quit = true;
+        return false;
+    }
+
+    return parse_guess(line, out_guess, gs->cfg.color_count, gs->cfg.allow_repetition);
+}
+
 static void play_human(GameConfig cfg, Stats *st) {
-    GameState gs = {0};
+    GameState gs;
+    memset(&gs, 0, sizeof(gs));
     gs.cfg = cfg;
     gs.in_progress = true;
-
-    srand((unsigned int)time(NULL)); // seed du RNG (note: seed aussi dans menu_loop → redondant)
 
     generate_secret(gs.secret, cfg.color_count, cfg.allow_repetition);
 
     time_t start_part = time(NULL);
 
-    while (gs.tries < cfg.max_tries) {
-        char guess[CODE_LEN];
+    printf("\n=== Partie HUMAIN ===\n");
+    print_palette(cfg.color_count);
+    printf("Code: %d positions | Repetitions: %s | Max tentatives: %d\n",
+           CODE_LEN, cfg.allow_repetition ? "ON" : "OFF", cfg.max_tries);
+    if (cfg.timed_mode) printf("Chrono strict: %ds par tentative (non interruptible, mais entree ignoree si depassee)\n", cfg.time_per_try_sec);
+    printf("Tape 'help' pour les regles, 'save' pour sauvegarder, 'quit' pour quitter.\n\n");
+
+    while (gs.tries < cfg.max_tries && gs.tries < MAX_HISTORY) {
+        char guess[CODE_LEN + 1] = {0};
         bool ok = false;
+        bool want_quit = false;
+
+        printf("\nTentative %d/%d\n", gs.tries + 1, cfg.max_tries);
 
         if (cfg.timed_mode) {
+            // En timed_mode, on ne peut pas intercepter "save/quit" pendant fgets de façon portable.
+            // On laisse donc l'utilisateur saisir le guess. Les commandes restent possibles hors chrono via menu.
             ok = timed_get_guess(guess, cfg.color_count, cfg.allow_repetition, cfg.time_per_try_sec);
+            if (!ok) {
+                printf("Entree invalide / hors temps.\n");
+                continue;
+            }
         } else {
-            char line[256];
-            if (!read_line(line, sizeof(line))) continue;
-            ok = parse_guess(line, guess, cfg.color_count, cfg.allow_repetition);
-        }
-
-        if (!ok) {
-            // Ici tu dis “entrée invalide ou hors temps” et tu continues sans consommer de tentative
-            // (ce qui est un choix de design, pas une obligation)
-            continue;
+            ok = get_guess_or_command(&gs, guess, &want_quit);
+            if (want_quit) break;
+            if (!ok) {
+                printf("Entree invalide. (Astuce: ex 'RGBY' ou 'R G B Y')\n");
+                continue;
+            }
         }
 
         int black = 0, white = 0;
         compute_feedback(gs.secret, guess, &black, &white);
 
-        memcpy(gs.guesses[gs.tries], guess, CODE_LEN);
+        memcpy(gs.guesses[gs.tries], guess, CODE_LEN + 1);
         gs.blacks[gs.tries] = black;
         gs.whites[gs.tries] = white;
         gs.tries++;
+
+        printf("-> %s | noirs=%d blancs=%d\n", guess, black, white);
+        print_history(&gs);
 
         if (black == CODE_LEN) {
             time_t end_part = time(NULL);
             double elapsed = difftime(end_part, start_part);
 
+            printf("\n✅ Gagne en %d tentative(s) ! Temps: %.0fs\n", gs.tries, elapsed);
+
             st->games_played++;
             st->games_won++;
-            st->total_tries += gs.tries;
+            st->total_tries += (unsigned long)gs.tries;
             st->total_time += elapsed;
 
             save_stats(st, "stats.txt");
             gs.in_progress = false;
-            return;
-        }
 
-        // Petite commande après chaque tour: save / quit / rien
-        char cmd[32];
-        if (read_line(cmd, sizeof(cmd))) {
-            if (strcmp(cmd, "save") == 0) save_game(&gs, "save.txt");
-            else if (strcmp(cmd, "quit") == 0) break;
+            // optionnel: supprimer save.txt si existait (on n'est pas obligé)
+            return;
         }
     }
 
-    // Défaite
+    // Défaite / quit
     time_t end_part = time(NULL);
     double elapsed = difftime(end_part, start_part);
 
-    st->games_played++;
-    st->total_tries += gs.tries;
-    st->total_time += elapsed;
+    if (gs.tries >= cfg.max_tries) {
+        printf("\n❌ Perdu. Le secret etait: %s\n", gs.secret);
+    } else {
+        printf("\nPartie quittee. Le secret etait: %s\n", gs.secret);
+    }
 
+    st->games_played++;
+    st->total_tries += (unsigned long)gs.tries;
+    st->total_time += elapsed;
     save_stats(st, "stats.txt");
 }
 
-/*
-  play_ai:
-  - génère un secret “caché”
-  - génère toutes les possibilités compatibles avec la config
-  - garde un tableau actif[] pour éliminer
-  - à chaque tour: choisit un guess (minimax), calcule feedback, filtre
-*/
 static void play_ai(GameConfig cfg, Stats *st) {
-    char secret[CODE_LEN];
+    char secret[CODE_LEN + 1];
     generate_secret_ai(secret, cfg.color_count, cfg.allow_repetition);
 
-    char possibles[2000][CODE_LEN]; // 2000 suffit pour 6^4=1296 (répétitions ON)
+    // taille max: 6^4 = 1296 (répétition ON). Sans répétition: 6P4 = 360.
+    char possibles[2000][CODE_LEN + 1];
     bool actif[2000];
 
     int nb_possibles = generate_all_codes(possibles, &cfg);
@@ -664,20 +744,29 @@ static void play_ai(GameConfig cfg, Stats *st) {
     int tries = 0;
     time_t start_part = time(NULL);
 
+    printf("\n=== Partie IA ===\n");
+    print_palette(cfg.color_count);
+    printf("Secret (cache): %s\n", secret);
+    printf("L'IA va tenter de trouver le secret en %d essais max.\n\n", cfg.max_tries);
+
     while (tries < cfg.max_tries) {
-        char guess[CODE_LEN];
+        char guess[CODE_LEN + 1];
         choose_next_guess(guess, possibles, actif, nb_possibles);
 
         int black = 0, white = 0;
         compute_feedback(secret, guess, &black, &white);
         tries++;
 
+        printf("IA tentative %d: %s -> noirs=%d blancs=%d\n", tries, guess, black, white);
+
         if (black == CODE_LEN) {
             time_t end_part = time(NULL);
             double elapsed = difftime(end_part, start_part);
 
+            printf("✅ IA a trouve en %d tentative(s). Temps: %.0fs\n", tries, elapsed);
+
             st->games_played++;
-            st->total_tries += tries;
+            st->total_tries += (unsigned long)tries;
             st->total_time += elapsed;
             save_stats(st, "stats.txt");
             return;
@@ -686,12 +775,13 @@ static void play_ai(GameConfig cfg, Stats *st) {
         filter_possibilities(possibles, actif, nb_possibles, guess, black, white);
     }
 
-    // Échec IA
     time_t end_part = time(NULL);
     double elapsed = difftime(end_part, start_part);
 
+    printf("❌ IA n'a pas trouve. Secret: %s | Temps: %.0fs\n", secret, elapsed);
+
     st->games_played++;
-    st->total_tries += tries;
+    st->total_tries += (unsigned long)tries;
     st->total_time += elapsed;
     save_stats(st, "stats.txt");
 }
@@ -700,18 +790,15 @@ static void play_ai(GameConfig cfg, Stats *st) {
    Menu + config utilisateur
    ------------------------- */
 
-/*
-  configure_game:
-  propose presets ou personnalisation.
-  Les helpers ask_int/ask_yes_no bouclent jusqu’à une entrée valide → UX console propre.
-*/
 static int ask_int(const char *prompt, int minv, int maxv) {
     char buf[128];
     int val;
 
     while (1) {
         printf("%s [%d..%d]: ", prompt, minv, maxv);
+        fflush(stdout);
         if (!read_line(buf, sizeof(buf))) continue;
+        trim_spaces(buf);
         if (sscanf(buf, "%d", &val) == 1 && val >= minv && val <= maxv) return val;
         printf("Valeur invalide.\n");
     }
@@ -722,7 +809,9 @@ static bool ask_yes_no(const char *prompt) {
 
     while (1) {
         printf("%s (o/n): ", prompt);
+        fflush(stdout);
         if (!read_line(buf, sizeof(buf))) continue;
+        trim_spaces(buf);
 
         if (buf[0]=='o'||buf[0]=='O'||buf[0]=='y'||buf[0]=='Y') return true;
         if (buf[0]=='n'||buf[0]=='N') return false;
@@ -732,8 +821,19 @@ static bool ask_yes_no(const char *prompt) {
 }
 
 static void configure_game(GameConfig *cfg) {
+    printf("\n=== Configuration ===\n");
+    printf("1) Facile\n");
+    printf("2) Intermediaire\n");
+    printf("3) Difficile\n");
+    printf("4) Expert\n");
+    printf("5) Personnalise\n");
+    printf("0) Retour\n");
+    printf("Choix: ");
+    fflush(stdout);
+
     char line[64];
     if (!read_line(line, sizeof(line))) return;
+    trim_spaces(line);
 
     int c = atoi(line);
 
@@ -752,15 +852,37 @@ static void configure_game(GameConfig *cfg) {
         default:
             break;
     }
+
+    printf("\nConfig actuelle: couleurs=%d, essais=%d, repetitions=%s, chrono=%s",
+           cfg->color_count, cfg->max_tries,
+           cfg->allow_repetition ? "ON" : "OFF",
+           cfg->timed_mode ? "ON" : "OFF");
+    if (cfg->timed_mode) printf(" (%ds)", cfg->time_per_try_sec);
+    printf("\n\n");
 }
 
-/*
-  menu_loop:
-  boucle principale:
-  - charge stats au lancement
-  - affiche menu
-  - appelle le bon mode
-*/
+static void print_menu(const GameConfig *cfg) {
+    printf("=====================================\n");
+    printf(" Mastermind (console)\n");
+    printf("-------------------------------------\n");
+    printf("Config: couleurs=%d, essais=%d, rep=%s, chrono=%s",
+           cfg->color_count, cfg->max_tries,
+           cfg->allow_repetition ? "ON" : "OFF",
+           cfg->timed_mode ? "ON" : "OFF");
+    if (cfg->timed_mode) printf("(%ds)", cfg->time_per_try_sec);
+    printf("\n");
+    printf("-------------------------------------\n");
+    printf("1) Jouer (humain)\n");
+    printf("2) Lancer IA\n");
+    printf("3) Configurer\n");
+    printf("4) Regles\n");
+    printf("5) Statistiques\n");
+    printf("6) Reprendre (save.txt)\n");
+    printf("0) Quitter\n");
+    printf("Choix: ");
+    fflush(stdout);
+}
+
 static void menu_loop(void) {
     GameConfig cfg;
     set_default_config(&cfg);
@@ -768,11 +890,15 @@ static void menu_loop(void) {
     Stats stats;
     load_stats(&stats, "stats.txt");
 
+    // seed RNG une seule fois
     srand((unsigned int)time(NULL));
 
     while (1) {
+        print_menu(&cfg);
+
         char line[64];
         if (!read_line(line, sizeof(line))) continue;
+        trim_spaces(line);
 
         int choice = atoi(line);
 
@@ -783,14 +909,130 @@ static void menu_loop(void) {
             case 4: print_rules(); break;
             case 5: print_stats(&stats); break;
             case 6: resume_game(&stats); break;
-            case 0: return;
-            default: break;
+            case 0: printf("Bye.\n"); return;
+            default: printf("Choix invalide.\n"); break;
         }
     }
 }
+
+/* -------------------------
+   Fonctions manquantes (corrigées)
+   ------------------------- */
+
+void generate_secret_ai(char secret[CODE_LEN + 1], int color_count, bool allow_repetition) {
+    // Pour l'instant, l'IA “crée” un secret aléatoire identique au mode humain.
+    // Garder cette fonction séparée te permet de changer la logique plus tard si tu veux.
+    generate_secret(secret, color_count, allow_repetition);
+}
+
+void print_rules(void) {
+    printf("\n=== Regles Mastermind ===\n");
+    printf("- Le code secret contient %d lettres (couleurs).\n", CODE_LEN);
+    printf("- Vous proposez une combinaison de %d lettres parmi la palette.\n", CODE_LEN);
+    printf("- Feedback:\n");
+    printf("  * noir  = bonne couleur a la bonne position\n");
+    printf("  * blanc = bonne couleur mais mauvaise position\n");
+    printf("- Commandes pendant une partie (mode non-chrono):\n");
+    printf("  * save : sauvegarde dans save.txt\n");
+    printf("  * quit : quitte la partie\n");
+    printf("  * help : affiche ces regles\n");
+    printf("- Exemple de saisie: RGBY, ou R G B Y\n\n");
+}
+
+void resume_game(Stats *st) {
+    GameState gs;
+    if (!load_game(&gs, "save.txt")) {
+        printf("\nImpossible de charger save.txt (absent ou corrompu).\n\n");
+        return;
+    }
+
+    printf("\n=== Reprise de partie (save.txt) ===\n");
+    print_palette(gs.cfg.color_count);
+    printf("Config: essais max=%d, repetitions=%s, chrono=%s",
+           gs.cfg.max_tries,
+           gs.cfg.allow_repetition ? "ON" : "OFF",
+           gs.cfg.timed_mode ? "ON" : "OFF");
+    if (gs.cfg.timed_mode) printf("(%ds)", gs.cfg.time_per_try_sec);
+    printf("\n");
+    printf("Tentatives deja faites: %d\n", gs.tries);
+    print_history(&gs);
+
+    time_t start_part = time(NULL);
+
+    // Rejouer à partir de l'état chargé
+    while (gs.tries < gs.cfg.max_tries && gs.tries < MAX_HISTORY) {
+        char guess[CODE_LEN + 1] = {0};
+        bool ok = false;
+        bool want_quit = false;
+
+        printf("\nTentative %d/%d\n", gs.tries + 1, gs.cfg.max_tries);
+
+        if (gs.cfg.timed_mode) {
+            ok = timed_get_guess(guess, gs.cfg.color_count, gs.cfg.allow_repetition, gs.cfg.time_per_try_sec);
+            if (!ok) {
+                printf("Entree invalide / hors temps.\n");
+                continue;
+            }
+        } else {
+            ok = get_guess_or_command(&gs, guess, &want_quit);
+            if (want_quit) break;
+            if (!ok) {
+                printf("Entree invalide.\n");
+                continue;
+            }
+        }
+
+        int black = 0, white = 0;
+        compute_feedback(gs.secret, guess, &black, &white);
+
+        memcpy(gs.guesses[gs.tries], guess, CODE_LEN + 1);
+        gs.blacks[gs.tries] = black;
+        gs.whites[gs.tries] = white;
+        gs.tries++;
+
+        printf("-> %s | noirs=%d blancs=%d\n", guess, black, white);
+        print_history(&gs);
+
+        if (black == CODE_LEN) {
+            time_t end_part = time(NULL);
+            double elapsed = difftime(end_part, start_part);
+
+            printf("\n✅ Gagne (reprise) en %d tentative(s) ! Temps (reprise): %.0fs\n", gs.tries, elapsed);
+
+            st->games_played++;
+            st->games_won++;
+            st->total_tries += (unsigned long)gs.tries;
+            st->total_time += elapsed;
+            save_stats(st, "stats.txt");
+
+            gs.in_progress = false;
+            // Tu peux choisir de supprimer save.txt ici si tu veux.
+            return;
+        }
+    }
+
+    time_t end_part = time(NULL);
+    double elapsed = difftime(end_part, start_part);
+
+    if (gs.tries >= gs.cfg.max_tries) {
+        printf("\n❌ Perdu (reprise). Le secret etait: %s\n", gs.secret);
+    } else {
+        printf("\nPartie reprise quittee. Le secret etait: %s\n", gs.secret);
+        // On laisse la sauvegarde intacte, mais tu peux aussi la mettre à jour
+        // save_game(&gs, "save.txt");
+    }
+
+    st->games_played++;
+    st->total_tries += (unsigned long)gs.tries;
+    st->total_time += elapsed;
+    save_stats(st, "stats.txt");
+}
+
+/* -------------------------
+   main
+   ------------------------- */
 
 int main(void) {
     menu_loop();
     return 0;
 }
-
