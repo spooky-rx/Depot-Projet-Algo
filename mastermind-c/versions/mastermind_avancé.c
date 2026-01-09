@@ -5,6 +5,11 @@
 #include <time.h>
 #include <stdbool.h>
 
+/* Prototypes nécessaires pour éviter les implicit declaration */
+void generate_secret_ai(char secret[CODE_LEN], int color_count, bool allow_repetition);
+void print_rules(void);
+void resume_game(Stats *st);
+
 /* Paramètres “globaux” du jeu */
 #define CODE_LEN 4
 #define MAX_COLORS 6
